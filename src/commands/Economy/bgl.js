@@ -13,16 +13,14 @@ import {
 
 import { logger } from '../../utils/logger.js';
 
+const OWNER_IDS = ['772345007469756436'];
+
 const BGL_CONFIG_KEY = (guildId) => `bgl_shop_config_${guildId}`;
 const BGL_USER_KEY = (guildId, userId) => `bgl_shop_user_${guildId}_${userId}`;
 const BGL_PENDING_KEY = (guildId, userId) => `bgl_shop_pending_${guildId}_${userId}`;
 
 function isOwner(userId) {
-    const owners = process.env.OWNER_IDS
-        ? process.env.OWNER_IDS.split(',').map(id => id.trim()).filter(Boolean)
-        : [];
-
-    return owners.includes(userId);
+    return OWNER_IDS.includes(userId);
 }
 
 function formatMoney(amount) {
@@ -32,12 +30,10 @@ function formatMoney(amount) {
 function generateDepositNote() {
     const part1 = Math.random().toString(36).substring(2, 6).toUpperCase();
     const part2 = Math.random().toString(36).substring(2, 6).toUpperCase();
-    return `FLOW-${part1}-${part2}`;
+    return `FROST-${part1}-${part2}`;
 }
 
 async function getUserData(client, guildId, userId) {
-    const key = BGL_USER_KEY(guildId, userId);
-
     const defaultData = {
         balance: 0,
         points: 0,
@@ -48,7 +44,7 @@ async function getUserData(client, guildId, userId) {
 
     if (!client.db) return defaultData;
 
-    const data = await client.db.get(key);
+    const data = await client.db.get(BGL_USER_KEY(guildId, userId));
     return data || defaultData;
 }
 
@@ -73,28 +69,46 @@ function buildShopEmbed(config, guild) {
     const max = Number(config.max || 500);
 
     const embed = new EmbedBuilder()
-        .setTitle(config.title || '🛒 BGL SHOP')
-        .setDescription(config.description || 'Instant delivery • PayPal F&F • Manual confirmation')
+        .setTitle(config.title || '❄️ FROSTMARKET BGL SHOP')
+        .setDescription(
+            config.description ||
+            'Welcome to **FrostMarket**!\n\nUse the buttons below to deposit, buy BGLs, check your account, or refresh the panel.'
+        )
         .setColor(config.color || '#00d5ff')
         .addFields(
             {
                 name: '💎 BGL Price',
-                value: `\`${formatMoney(price)} per BGL\`\n1 BGL = 100 DL`,
+                value: `\`${formatMoney(price)} / BGL\`\n1 BGL = 100 DL`,
                 inline: true,
             },
             {
-                name: '📦 Order Size',
-                value: `Min \`${min}\` — Max \`${max}\` BGL`,
+                name: '📦 Order Limits',
+                value: `Min: \`${min}\` BGL\nMax: \`${max}\` BGL`,
                 inline: true,
             },
             {
-                name: '⚡ Status',
-                value: config.status || 'Online',
+                name: '⚡ Shop Status',
+                value: `\`${config.status || 'Online'}\``,
+                inline: true,
+            },
+            {
+                name: '💳 Payment',
+                value: 'PayPal Friends & Family',
+                inline: true,
+            },
+            {
+                name: '🛒 Delivery',
+                value: 'Manual delivery after payment confirmation',
+                inline: true,
+            },
+            {
+                name: '🔄 Live Stats',
+                value: 'Balance, points and purchases update automatically.',
                 inline: true,
             },
         )
         .setFooter({
-            text: `${guild.name} • Payments via PayPal F&F`,
+            text: `${guild.name} • FrostMarket`,
             iconURL: guild.iconURL({ dynamic: true }) || undefined,
         })
         .setTimestamp();
@@ -140,17 +154,18 @@ function buildShopButtons() {
 
 function buildDepositEmbed(config, amount, note, user) {
     return new EmbedBuilder()
-        .setTitle('💳 Deposit — PayPal F&F')
+        .setTitle('💳 Deposit Balance')
         .setColor('#5865F2')
         .setDescription(
-            `Send exactly **${formatMoney(amount)}** via PayPal **Friends & Family**.\n\n` +
-            `**📧 PayPal address:**\n\`${config.paypal}\`\n\n` +
-            `**📝 Note — copy exactly:**\n\`${note}\`\n\n` +
-            `⏳ Expires in **10 minutes**.\n\n` +
-            `🤖 Payment is checked manually. Press **I’ve Paid** after sending.`
+            `Send exactly **${formatMoney(amount)}** using PayPal **Friends & Family**.\n\n` +
+            `**📧 PayPal:**\n\`${config.paypal}\`\n\n` +
+            `**📝 Payment note:**\n\`${note}\`\n\n` +
+            `After sending the payment, press **I've Paid**.\n\n` +
+            `Your balance will be added after owner confirmation.`
         )
+        .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
         .setFooter({
-            text: `${config.shopName || 'BGL Shop'} • Deposit`,
+            text: `${config.shopName || 'FrostMarket'} • Deposit`,
             iconURL: user.displayAvatarURL({ dynamic: true }),
         })
         .setTimestamp();
@@ -164,13 +179,13 @@ function buildAccountEmbed(config, userData, user) {
     const bar = '▰'.repeat(filled) + '▱'.repeat(10 - filled);
 
     return new EmbedBuilder()
-        .setTitle(`👤 ${user.username}`)
-        .setColor('#5865F2')
+        .setTitle(`👤 ${user.username}'s Account`)
+        .setColor('#00d5ff')
         .setThumbnail(user.displayAvatarURL({ dynamic: true, size: 256 }))
         .addFields(
             {
-                name: 'Member',
-                value: userData.rank || 'Member',
+                name: '🏷️ Rank',
+                value: `**${userData.rank || 'Member'}**`,
                 inline: true,
             },
             {
@@ -185,7 +200,7 @@ function buildAccountEmbed(config, userData, user) {
             },
             {
                 name: '📈 Progress',
-                value: `\`${bar}\`\n${points} / ${progressMax} pts — 30 pts to Silver Buyer`,
+                value: `\`${bar}\`\n${points} / ${progressMax} pts`,
                 inline: false,
             },
             {
@@ -195,12 +210,14 @@ function buildAccountEmbed(config, userData, user) {
             },
             {
                 name: '🛒 Ready to Buy',
-                value: Number(userData.balance || 0) > 0 ? 'Use **Buy BGLs**' : '*Deposit to start buying*',
+                value: Number(userData.balance || 0) > 0
+                    ? 'Press **Buy BGLs**'
+                    : 'Deposit first to start buying.',
                 inline: true,
             },
         )
         .setFooter({
-            text: `${config.shopName || 'BGL Shop'} • Member`,
+            text: `${config.shopName || 'FrostMarket'} • Account Stats`,
         })
         .setTimestamp();
 }
@@ -251,7 +268,7 @@ export default {
         .addStringOption(option =>
             option
                 .setName('thumbnail')
-                .setDescription('Small thumbnail/profile image URL for the shop embed.')
+                .setDescription('Small thumbnail image URL for the shop embed.')
                 .setRequired(false),
         )
         .addStringOption(option =>
@@ -269,7 +286,7 @@ export default {
         .addStringOption(option =>
             option
                 .setName('status')
-                .setDescription('Shop status text. Example: Online, Restocking, Closed')
+                .setDescription('Shop status. Example: Online, Restocking, Closed')
                 .setRequired(false),
         ),
 
@@ -291,10 +308,10 @@ export default {
             const max = interaction.options.getInteger('max') || 500;
             const image = interaction.options.getString('image');
             const thumbnail = interaction.options.getString('thumbnail');
-            const title = interaction.options.getString('title') || '🛒 BGL SHOP';
+            const title = interaction.options.getString('title') || '❄️ FROSTMARKET BGL SHOP';
             const description =
                 interaction.options.getString('description') ||
-                'Instant delivery • PayPal F&F • Manual confirmation';
+                'Welcome to **FrostMarket**!\n\nUse the buttons below to deposit, buy BGLs, check your account, or refresh the panel.';
             const status = interaction.options.getString('status') || 'Online';
 
             const shopConfig = {
@@ -386,7 +403,7 @@ export default {
                     const amountInput = new TextInputBuilder()
                         .setCustomId('amount')
                         .setLabel('Amount (€)')
-                        .setPlaceholder('e.g. 11.00')
+                        .setPlaceholder('Example: 10.00')
                         .setStyle(TextInputStyle.Short)
                         .setRequired(true);
 
@@ -399,7 +416,12 @@ export default {
                 }
 
                 if (interaction.customId === 'bgl_account') {
-                    const userData = await getUserData(client, interaction.guildId, interaction.user.id);
+                    const userData = await getUserData(
+                        client,
+                        interaction.guildId,
+                        interaction.user.id,
+                    );
+
                     const embed = buildAccountEmbed(config, userData, interaction.user);
 
                     await interaction.reply({
@@ -411,14 +433,20 @@ export default {
                 }
 
                 if (interaction.customId === 'bgl_buy') {
-                    const userData = await getUserData(client, interaction.guildId, interaction.user.id);
+                    const userData = await getUserData(
+                        client,
+                        interaction.guildId,
+                        interaction.user.id,
+                    );
+
                     const minCost = Number(config.price || 0) * Number(config.min || 1);
 
                     if (Number(userData.balance || 0) < minCost) {
                         await interaction.reply({
                             content:
-                                `❌ Your balance is **${formatMoney(userData.balance)}** — not enough. ` +
-                                `(Min: **${formatMoney(minCost)}**)\nDeposit first: press **Deposit**.`,
+                                `❌ Your balance is **${formatMoney(userData.balance)}**.\n` +
+                                `Minimum order needs **${formatMoney(minCost)}**.\n\n` +
+                                `Press **Deposit** first.`,
                             flags: MessageFlags.Ephemeral,
                         });
 
@@ -456,7 +484,9 @@ export default {
                         return true;
                     }
 
-                    const pending = await client.db.get(BGL_PENDING_KEY(interaction.guildId, userId));
+                    const pending = await client.db.get(
+                        BGL_PENDING_KEY(interaction.guildId, userId),
+                    );
 
                     if (!pending) {
                         await interaction.reply({
@@ -469,14 +499,10 @@ export default {
 
                     await interaction.reply({
                         content:
-                            `✅ Payment marked as sent.\n` +
+                            `✅ Payment marked as sent.\n\n` +
                             `Your deposit **${formatMoney(pending.amount)}** is waiting for owner confirmation.`,
                         flags: MessageFlags.Ephemeral,
                     });
-
-                    const ownerIds = process.env.OWNER_IDS
-                        ? process.env.OWNER_IDS.split(',').map(id => id.trim()).filter(Boolean)
-                        : [];
 
                     const ownerRow = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
@@ -492,7 +518,7 @@ export default {
                             .setStyle(ButtonStyle.Danger),
                     );
 
-                    for (const ownerId of ownerIds) {
+                    for (const ownerId of OWNER_IDS) {
                         const owner = await interaction.client.users.fetch(ownerId).catch(() => null);
                         if (!owner) continue;
 
@@ -521,7 +547,10 @@ export default {
                     }
 
                     const userId = interaction.customId.split(':')[1];
-                    const pending = await client.db.get(BGL_PENDING_KEY(interaction.guildId, userId));
+
+                    const pending = await client.db.get(
+                        BGL_PENDING_KEY(interaction.guildId, userId),
+                    );
 
                     if (!pending) {
                         await interaction.reply({
@@ -533,9 +562,12 @@ export default {
                     }
 
                     const userData = await getUserData(client, interaction.guildId, userId);
-                    userData.balance = Number(userData.balance || 0) + Number(pending.amount || 0);
+
+                    userData.balance =
+                        Number(userData.balance || 0) + Number(pending.amount || 0);
 
                     await saveUserData(client, interaction.guildId, userId, userData);
+
                     await client.db.delete(BGL_PENDING_KEY(interaction.guildId, userId));
 
                     await interaction.update({
@@ -547,6 +579,7 @@ export default {
                     });
 
                     const user = await interaction.client.users.fetch(userId).catch(() => null);
+
                     if (user) {
                         await user.send(
                             `✅ Your deposit of **${formatMoney(pending.amount)}** has been confirmed.`
@@ -567,6 +600,7 @@ export default {
                     }
 
                     const userId = interaction.customId.split(':')[1];
+
                     await client.db.delete(BGL_PENDING_KEY(interaction.guildId, userId));
 
                     await interaction.update({
@@ -575,9 +609,10 @@ export default {
                     });
 
                     const user = await interaction.client.users.fetch(userId).catch(() => null);
+
                     if (user) {
                         await user.send(
-                            `❌ Your deposit was denied. Please contact staff if this was a mistake.`
+                            '❌ Your deposit was denied. Please contact staff if this was a mistake.'
                         ).catch(() => {});
                     }
 
@@ -613,7 +648,12 @@ export default {
                         pending,
                     );
 
-                    const embed = buildDepositEmbed(config, amount, note, interaction.user);
+                    const embed = buildDepositEmbed(
+                        config,
+                        amount,
+                        note,
+                        interaction.user,
+                    );
 
                     const row = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
@@ -645,7 +685,10 @@ export default {
                         return true;
                     }
 
-                    if (bglAmount < Number(config.min || 1) || bglAmount > Number(config.max || 500)) {
+                    if (
+                        bglAmount < Number(config.min || 1) ||
+                        bglAmount > Number(config.max || 500)
+                    ) {
                         await interaction.reply({
                             content: `❌ Order amount must be between **${config.min}** and **${config.max}** BGL.`,
                             flags: MessageFlags.Ephemeral,
@@ -655,7 +698,12 @@ export default {
                     }
 
                     const totalCost = bglAmount * Number(config.price || 0);
-                    const userData = await getUserData(client, interaction.guildId, interaction.user.id);
+
+                    const userData = await getUserData(
+                        client,
+                        interaction.guildId,
+                        interaction.user.id,
+                    );
 
                     if (Number(userData.balance || 0) < totalCost) {
                         await interaction.reply({
@@ -670,14 +718,21 @@ export default {
                     }
 
                     userData.balance = Number(userData.balance || 0) - totalCost;
-                    userData.allTimeBought = Number(userData.allTimeBought || 0) + bglAmount;
-                    userData.points = Number(userData.points || 0) + Math.floor(bglAmount);
+                    userData.allTimeBought =
+                        Number(userData.allTimeBought || 0) + bglAmount;
+                    userData.points =
+                        Number(userData.points || 0) + Math.floor(bglAmount);
 
                     if (userData.points >= 30) {
                         userData.rank = 'Silver Buyer';
                     }
 
-                    await saveUserData(client, interaction.guildId, interaction.user.id, userData);
+                    await saveUserData(
+                        client,
+                        interaction.guildId,
+                        interaction.user.id,
+                        userData,
+                    );
 
                     await interaction.reply({
                         content:
@@ -689,11 +744,7 @@ export default {
                         flags: MessageFlags.Ephemeral,
                     });
 
-                    const ownerIds = process.env.OWNER_IDS
-                        ? process.env.OWNER_IDS.split(',').map(id => id.trim()).filter(Boolean)
-                        : [];
-
-                    for (const ownerId of ownerIds) {
+                    for (const ownerId of OWNER_IDS) {
                         const owner = await interaction.client.users.fetch(ownerId).catch(() => null);
                         if (!owner) continue;
 
