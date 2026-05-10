@@ -52,9 +52,9 @@ export default {
                 )
                 .addStringOption((option) =>
                     option
-                        .setName("thumbnail_url")
+                        .setName("thumbnail")
                         .setDescription(
-                            "Image URL for the ticket panel thumbnail.",
+                            "Thumbnail image URL for the ticket panel.",
                         )
                         .setRequired(false),
                 )
@@ -176,7 +176,7 @@ export default {
                     "Click the button below to create a support ticket.";
 
                 const thumbnailUrl =
-                    interaction.options.getString("thumbnail_url");
+                    interaction.options.getString("thumbnail");
 
                 const buttonLabel =
                     interaction.options.getString("button_label") ||
@@ -349,8 +349,7 @@ export default {
                             },
                         );
 
-                    // Jos sinulla on logikanava myöhemmin, voit lähettää logEmbedin sinne.
-                    // Nyt tämä vain luodaan samalla tavalla kuin alkuperäisessä koodissasi.
+                    // Log embed on valmiina, jos haluat lähettää sen logikanavaan myöhemmin.
 
                 } catch (error) {
                     logger.error('Ticket setup error', {
