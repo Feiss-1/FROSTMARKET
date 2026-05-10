@@ -54,7 +54,7 @@ export default {
                     option
                         .setName("thumbnail")
                         .setDescription(
-                            "Thumbnail image URL for the ticket panel.",
+                            "Image URL for the ticket panel. Shows as a large embed image.",
                         )
                         .setRequired(false),
                 )
@@ -195,7 +195,7 @@ export default {
                 });
 
                 if (thumbnailUrl) {
-                    setupEmbed.setThumbnail(thumbnailUrl);
+                    setupEmbed.setImage(thumbnailUrl);
                 }
 
                 const ticketButton = new ActionRowBuilder().addComponents(
@@ -246,7 +246,7 @@ export default {
                             staffRoleId: staffRole?.id,
                             maxTickets: maxTicketsPerUser,
                             dmOnClose: dmOnClose,
-                            thumbnailUrl: thumbnailUrl || null,
+                            imageUrl: thumbnailUrl || null,
                         });
                     }
 
@@ -267,7 +267,7 @@ export default {
                     }
 
                     if (thumbnailUrl) {
-                        successMessage += `A thumbnail image has been added to the ticket panel. `;
+                        successMessage += `A large image has been added to the ticket panel. `;
                     }
 
                     successMessage += `\n\n**Max Tickets Per User:** ${maxTicketsPerUser}\n**DM on Close:** ${dmOnClose ? 'Enabled' : 'Disabled'}`;
@@ -291,7 +291,7 @@ export default {
                         staffRoleId: staffRole?.id,
                         maxTickets: maxTicketsPerUser,
                         dmOnClose: dmOnClose,
-                        thumbnailUrl: thumbnailUrl || null,
+                        imageUrl: thumbnailUrl || null,
                         commandName: 'ticket_setup',
                     });
 
@@ -328,7 +328,7 @@ export default {
                                 inline: true,
                             },
                             {
-                                name: "Thumbnail URL",
+                                name: "Image URL",
                                 value: thumbnailUrl || "None specified.",
                                 inline: false,
                             },
