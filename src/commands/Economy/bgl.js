@@ -15,12 +15,48 @@ import { logger } from '../../utils/logger.js';
 
 const OWNER_IDS = ['772345007469756436'];
 
+const BGL_LISTENER_FLAG = Symbol.for('frostmarket.bgl.listener');
+
 const BGL_CONFIG_KEY = (guildId) => `bgl_shop_config_${guildId}`;
 const BGL_USER_KEY = (guildId, userId) => `bgl_shop_user_${guildId}_${userId}`;
 const BGL_PENDING_KEY = (guildId, userId) => `bgl_shop_pending_${guildId}_${userId}`;
 
 function isOwner(userId) {
     return OWNER_IDS.includes(userId);
+}
+
+function ensureBglListener(client) {
+    if (!client || client[BGL_LISTENER_FLAG]) return;
+
+    client[BGL_LISTENER_FLAG] = true;
+
+    client.on('interactionCreate', async (interaction) => {
+        try {
+            if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+
+            const customId = interaction.customId || '';
+            if (!customId.startsWith('bgl_')) return;
+
+            await bglCommand.handleInteraction(interaction, client);
+        } catch (error) {
+            logger.error('BGL auto listener error:', {
+                error: error.message,
+                stack: error.stack,
+                customId: interaction.customId,
+                userId: interaction.user?.id,
+                guildId: interaction.guildId,
+            });
+
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({
+                    content: '❌ BGL system error.',
+                    flags: MessageFlags.Ephemeral,
+                }).catch(() => {});
+            }
+        }
+    });
+
+    logger.info('✅ BGL interaction listener registered automatically');
 }
 
 function formatMoney(amount) {
@@ -241,7 +277,7 @@ function buildAccountEmbed(config, userData, user) {
         .setTimestamp();
 }
 
-export default {
+const bglCommand = {
     data: new SlashCommandBuilder()
         .setName('bgl')
         .setDescription('Owner-only BGL shop panel setup.')
@@ -313,6 +349,8 @@ export default {
 
     async execute(interaction, config, client) {
         try {
+            ensureBglListener(client);
+
             if (!isOwner(interaction.user.id)) {
                 return await interaction.reply({
                     content: '❌ Only the bot owner can use this command.',
@@ -371,7 +409,8 @@ export default {
                     `**Min:** ${min} BGL\n` +
                     `**Max:** ${max} BGL\n` +
                     `**Image:** ${image ? 'Added' : 'None'}\n` +
-                    `**Thumbnail:** ${thumbnail ? 'Added' : 'None'}`,
+                    `**Thumbnail:** ${thumbnail ? 'Added' : 'None'}\n\n` +
+                    `✅ Buttons are now active automatically.`,
                 flags: MessageFlags.Ephemeral,
             });
         } catch (error) {
@@ -802,3 +841,5 @@ export default {
         }
     },
 };
+
+export default bglCommand;
