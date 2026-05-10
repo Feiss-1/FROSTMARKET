@@ -63,10 +63,29 @@ async function saveShopConfig(client, guildId, config) {
     await client.db.set(BGL_CONFIG_KEY(guildId), config);
 }
 
+async function deleteDbKey(client, key) {
+    if (!client.db) return;
+
+    if (typeof client.db.delete === 'function') {
+        await client.db.delete(key);
+        return;
+    }
+
+    if (typeof client.db.del === 'function') {
+        await client.db.del(key);
+        return;
+    }
+
+    await client.db.set(key, null);
+}
+
 function buildShopEmbed(config, guild) {
     const price = Number(config.price || 0.89);
     const min = Number(config.min || 1);
     const max = Number(config.max || 500);
+
+    const guildName = guild?.name || config.shopName || 'FrostMarket';
+    const guildIcon = guild?.iconURL?.({ dynamic: true }) || undefined;
 
     const embed = new EmbedBuilder()
         .setTitle(config.title || '❄️ FROSTMARKET BGL SHOP')
@@ -98,7 +117,7 @@ function buildShopEmbed(config, guild) {
             },
             {
                 name: '🛒 Delivery',
-                value: 'Manual delivery after payment confirmation',
+                value: 'Manual delivery after confirmation',
                 inline: true,
             },
             {
@@ -108,8 +127,8 @@ function buildShopEmbed(config, guild) {
             },
         )
         .setFooter({
-            text: `${guild.name} • FrostMarket`,
-            iconURL: guild.iconURL({ dynamic: true }) || undefined,
+            text: `${guildName} • FrostMarket`,
+            iconURL: guildIcon,
         })
         .setTimestamp();
 
@@ -316,6 +335,7 @@ export default {
 
             const shopConfig = {
                 guildId: interaction.guildId,
+                guildName: interaction.guild.name,
                 channelId: channel.id,
                 paypal,
                 price,
@@ -377,13 +397,118 @@ export default {
 
     async handleInteraction(interaction, client) {
         try {
-            if (!interaction.guildId) return false;
+            if (!interaction.isButton() && !interaction.isModalSubmit()) {
+                return false;
+            }
 
-            const config = await getShopConfig(client, interaction.guildId);
-            if (!config) return false;
+            const customId = interaction.customId || '';
+
+            if (!customId.startsWith('bgl_')) {
+                return false;
+            }
 
             if (interaction.isButton()) {
-                if (interaction.customId === 'bgl_refresh') {
+                if (customId.startsWith('bgl_owner_approve:')) {
+                    if (!isOwner(interaction.user.id)) {
+                        await interaction.reply({
+                            content: '❌ Owner only.',
+                            flags: MessageFlags.Ephemeral,
+                        });
+                        return true;
+                    }
+
+                    const [, , guildId, userId] = customId.split(':');
+                    const pendingKey = BGL_PENDING_KEY(guildId, userId);
+                    const pending = await client.db.get(pendingKey);
+
+                    if (!pending) {
+                        await interaction.reply({
+                            content: '❌ Pending deposit not found.',
+                            flags: MessageFlags.Ephemeral,
+                        });
+                        return true;
+                    }
+
+                    const userData = await getUserData(client, guildId, userId);
+                    userData.balance = Number(userData.balance || 0) + Number(pending.amount || 0);
+
+                    await saveUserData(client, guildId, userId, userData);
+                    await deleteDbKey(client, pendingKey);
+
+                    await interaction.update({
+                        content:
+                            `✅ Deposit approved.\n\n` +
+                            `**User:** <@${userId}>\n` +
+                            `**Amount:** ${formatMoney(pending.amount)}\n` +
+                            `**New Balance:** ${formatMoney(userData.balance)}`,
+                        components: [],
+                    });
+
+                    const user = await interaction.client.users.fetch(userId).catch(() => null);
+
+                    if (user) {
+                        await user.send(
+                            `✅ Your deposit of **${formatMoney(pending.amount)}** has been confirmed.\n` +
+                            `Your new balance is **${formatMoney(userData.balance)}**.`
+                        ).catch(() => {});
+                    }
+
+                    return true;
+                }
+
+                if (customId.startsWith('bgl_owner_deny:')) {
+                    if (!isOwner(interaction.user.id)) {
+                        await interaction.reply({
+                            content: '❌ Owner only.',
+                            flags: MessageFlags.Ephemeral,
+                        });
+                        return true;
+                    }
+
+                    const [, , guildId, userId] = customId.split(':');
+                    const pendingKey = BGL_PENDING_KEY(guildId, userId);
+
+                    await deleteDbKey(client, pendingKey);
+
+                    await interaction.update({
+                        content: `❌ Deposit denied for <@${userId}>.`,
+                        components: [],
+                    });
+
+                    const user = await interaction.client.users.fetch(userId).catch(() => null);
+
+                    if (user) {
+                        await user.send(
+                            '❌ Your deposit was denied. Please contact staff if this was a mistake.'
+                        ).catch(() => {});
+                    }
+
+                    return true;
+                }
+            }
+
+            const guildId = interaction.guildId;
+
+            if (!guildId) {
+                await interaction.reply({
+                    content: '❌ This button can only be used inside the server.',
+                    flags: MessageFlags.Ephemeral,
+                }).catch(() => {});
+                return true;
+            }
+
+            const config = await getShopConfig(client, guildId);
+
+            if (!config) {
+                await interaction.reply({
+                    content: '❌ BGL shop is not configured. Use `/bgl` first.',
+                    flags: MessageFlags.Ephemeral,
+                }).catch(() => {});
+                return true;
+            }
+
+            if (interaction.isButton()) {
+                if (customId === 'bgl_refresh') {
                     const embed = buildShopEmbed(config, interaction.guild);
                     const buttons = buildShopButtons();
 
@@ -395,7 +520,7 @@ export default {
                     return true;
                 }
 
-                if (interaction.customId === 'bgl_deposit') {
+                if (customId === 'bgl_deposit') {
                     const modal = new ModalBuilder()
                         .setCustomId('bgl_deposit_modal')
                         .setTitle('💳 Deposit Balance');
@@ -415,13 +540,8 @@ export default {
                     return true;
                 }
 
-                if (interaction.customId === 'bgl_account') {
-                    const userData = await getUserData(
-                        client,
-                        interaction.guildId,
-                        interaction.user.id,
-                    );
-
+                if (customId === 'bgl_account') {
+                    const userData = await getUserData(client, guildId, interaction.user.id);
                     const embed = buildAccountEmbed(config, userData, interaction.user);
 
                     await interaction.reply({
@@ -432,13 +552,8 @@ export default {
                     return true;
                 }
 
-                if (interaction.customId === 'bgl_buy') {
-                    const userData = await getUserData(
-                        client,
-                        interaction.guildId,
-                        interaction.user.id,
-                    );
-
+                if (customId === 'bgl_buy') {
+                    const userData = await getUserData(client, guildId, interaction.user.id);
                     const minCost = Number(config.price || 0) * Number(config.min || 1);
 
                     if (Number(userData.balance || 0) < minCost) {
@@ -472,8 +587,8 @@ export default {
                     return true;
                 }
 
-                if (interaction.customId.startsWith('bgl_paid_confirm:')) {
-                    const userId = interaction.customId.split(':')[1];
+                if (customId.startsWith('bgl_paid_confirm:')) {
+                    const userId = customId.split(':')[1];
 
                     if (interaction.user.id !== userId) {
                         await interaction.reply({
@@ -484,9 +599,7 @@ export default {
                         return true;
                     }
 
-                    const pending = await client.db.get(
-                        BGL_PENDING_KEY(interaction.guildId, userId),
-                    );
+                    const pending = await client.db.get(BGL_PENDING_KEY(guildId, userId));
 
                     if (!pending) {
                         await interaction.reply({
@@ -506,13 +619,13 @@ export default {
 
                     const ownerRow = new ActionRowBuilder().addComponents(
                         new ButtonBuilder()
-                            .setCustomId(`bgl_owner_approve:${userId}`)
+                            .setCustomId(`bgl_owner_approve:${guildId}:${userId}`)
                             .setLabel('Approve Deposit')
                             .setEmoji('✅')
                             .setStyle(ButtonStyle.Success),
 
                         new ButtonBuilder()
-                            .setCustomId(`bgl_owner_deny:${userId}`)
+                            .setCustomId(`bgl_owner_deny:${guildId}:${userId}`)
                             .setLabel('Deny Deposit')
                             .setEmoji('❌')
                             .setStyle(ButtonStyle.Danger),
@@ -535,93 +648,10 @@ export default {
 
                     return true;
                 }
-
-                if (interaction.customId.startsWith('bgl_owner_approve:')) {
-                    if (!isOwner(interaction.user.id)) {
-                        await interaction.reply({
-                            content: '❌ Owner only.',
-                            flags: MessageFlags.Ephemeral,
-                        });
-
-                        return true;
-                    }
-
-                    const userId = interaction.customId.split(':')[1];
-
-                    const pending = await client.db.get(
-                        BGL_PENDING_KEY(interaction.guildId, userId),
-                    );
-
-                    if (!pending) {
-                        await interaction.reply({
-                            content: '❌ Pending deposit not found.',
-                            flags: MessageFlags.Ephemeral,
-                        });
-
-                        return true;
-                    }
-
-                    const userData = await getUserData(client, interaction.guildId, userId);
-
-                    userData.balance =
-                        Number(userData.balance || 0) + Number(pending.amount || 0);
-
-                    await saveUserData(client, interaction.guildId, userId, userData);
-
-                    await client.db.delete(BGL_PENDING_KEY(interaction.guildId, userId));
-
-                    await interaction.update({
-                        content:
-                            `✅ Deposit approved.\n\n` +
-                            `**User:** <@${userId}>\n` +
-                            `**Amount:** ${formatMoney(pending.amount)}`,
-                        components: [],
-                    });
-
-                    const user = await interaction.client.users.fetch(userId).catch(() => null);
-
-                    if (user) {
-                        await user.send(
-                            `✅ Your deposit of **${formatMoney(pending.amount)}** has been confirmed.`
-                        ).catch(() => {});
-                    }
-
-                    return true;
-                }
-
-                if (interaction.customId.startsWith('bgl_owner_deny:')) {
-                    if (!isOwner(interaction.user.id)) {
-                        await interaction.reply({
-                            content: '❌ Owner only.',
-                            flags: MessageFlags.Ephemeral,
-                        });
-
-                        return true;
-                    }
-
-                    const userId = interaction.customId.split(':')[1];
-
-                    await client.db.delete(BGL_PENDING_KEY(interaction.guildId, userId));
-
-                    await interaction.update({
-                        content: `❌ Deposit denied for <@${userId}>.`,
-                        components: [],
-                    });
-
-                    const user = await interaction.client.users.fetch(userId).catch(() => null);
-
-                    if (user) {
-                        await user.send(
-                            '❌ Your deposit was denied. Please contact staff if this was a mistake.'
-                        ).catch(() => {});
-                    }
-
-                    return true;
-                }
             }
 
             if (interaction.isModalSubmit()) {
-                if (interaction.customId === 'bgl_deposit_modal') {
+                if (customId === 'bgl_deposit_modal') {
                     const amountRaw = interaction.fields.getTextInputValue('amount');
                     const amount = Number(String(amountRaw).replace(',', '.'));
 
@@ -638,13 +668,15 @@ export default {
 
                     const pending = {
                         userId: interaction.user.id,
+                        guildId,
+                        guildName: interaction.guild.name,
                         amount,
                         note,
                         createdAt: new Date().toISOString(),
                     };
 
                     await client.db.set(
-                        BGL_PENDING_KEY(interaction.guildId, interaction.user.id),
+                        BGL_PENDING_KEY(guildId, interaction.user.id),
                         pending,
                     );
 
@@ -672,7 +704,7 @@ export default {
                     return true;
                 }
 
-                if (interaction.customId === 'bgl_buy_modal') {
+                if (customId === 'bgl_buy_modal') {
                     const amountRaw = interaction.fields.getTextInputValue('amount');
                     const bglAmount = Number(String(amountRaw).replace(',', '.'));
 
@@ -698,12 +730,7 @@ export default {
                     }
 
                     const totalCost = bglAmount * Number(config.price || 0);
-
-                    const userData = await getUserData(
-                        client,
-                        interaction.guildId,
-                        interaction.user.id,
-                    );
+                    const userData = await getUserData(client, guildId, interaction.user.id);
 
                     if (Number(userData.balance || 0) < totalCost) {
                         await interaction.reply({
@@ -718,21 +745,14 @@ export default {
                     }
 
                     userData.balance = Number(userData.balance || 0) - totalCost;
-                    userData.allTimeBought =
-                        Number(userData.allTimeBought || 0) + bglAmount;
-                    userData.points =
-                        Number(userData.points || 0) + Math.floor(bglAmount);
+                    userData.allTimeBought = Number(userData.allTimeBought || 0) + bglAmount;
+                    userData.points = Number(userData.points || 0) + Math.floor(bglAmount);
 
                     if (userData.points >= 30) {
                         userData.rank = 'Silver Buyer';
                     }
 
-                    await saveUserData(
-                        client,
-                        interaction.guildId,
-                        interaction.user.id,
-                        userData,
-                    );
+                    await saveUserData(client, guildId, interaction.user.id, userData);
 
                     await interaction.reply({
                         content:
