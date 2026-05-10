@@ -25,7 +25,7 @@ export const botConfig = {
     activities: [
       {
         // Text users will see (example: "Playing /help | Titan Bot").
-        name: "Made with ❤️",
+        name: "FROSTMARKET! THE BEST BGL'S HERE!❄️",
         // Activity type number (0 = Playing).
         type: 0, 
       },
@@ -88,8 +88,8 @@ export const botConfig = {
   embeds: {
     colors: {
       // Main brand colors.
-      primary: "#336699", 
-      secondary: "#2F3136", 
+      primary: "#002fff", 
+      secondary: "#00d5ff", 
 
       // Standard status colors for success/error/warning/info messages.
       success: "#57F287", 
@@ -136,12 +136,12 @@ export const botConfig = {
     },
     footer: {
       // Default footer text used in bot embeds.
-      text: "Titan Bot",
+      text: "FROSTMARKET",
       // Footer icon URL (null = no icon).
       icon: null,
     },
     // Default thumbnail URL for embeds (null = no thumbnail).
-    thumbnail: null,
+    thumbnail: https://cdn.discordapp.com/attachments/1502796751814397992/1502827899244380290/frostmarket_1920x1080_style.png?ex=6a01210c&is=69ffcf8c&hm=25f141f782ebadfaa539784fe1c9255cbd15dc19bf1fc1bdf34c5ad0b54b37b7&,
     author: {
       // Optional default embed author block.
       name: null,
