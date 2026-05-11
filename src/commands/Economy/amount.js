@@ -7,31 +7,68 @@ import {
 
 import { logger } from '../../utils/logger.js';
 
+// ===============================
+// EDIT THESE
+// ===============================
 const OWNER_IDS = ['772345007469756436'];
+
+// Laita Gamblit accountin tiedot tähän.
+// Älä lähetä tätä tiedostoa kenellekään, jos tässä on oikea salasana.
+const GAMBLIT_USERNAME = 'FROSTMARKET';
+const GAMBLIT_PASSWORD = 'Jukkapoika124';
+
+// Nämä pitää vaihtaa sinun Gamblit-sivun oikeisiin osoitteisiin.
+const GAMBLIT_LOGIN_URL = 'https://gamblit.net/';
+const GAMBLIT_BALANCE_URL = 'https://gamblit.net/';
+
+// Esimerkkejä:
+// Jos API palauttaa { "dl": 12345 }, käytä 'dl'
+// Jos API palauttaa { "balance": { "dl": 12345 } }, käytä 'balance.dl'
+const DL_JSON_PATH = 'dl';
+
+// Päivitysnopeus. 1000 = 1 sekunti.
+const UPDATE_INTERVAL_MS = 1000;
+
+// ===============================
+// DO NOT EDIT BELOW UNLESS NEEDED
+// ===============================
 
 const AMOUNT_CONFIG_KEY = (guildId) => `amount_panel_config_${guildId}`;
 const AMOUNT_INTERVAL_FLAG = Symbol.for('frostmarket.amount.intervals');
+
+let sessionCookie = null;
+let lastLoginAt = 0;
 
 function isOwner(userId) {
     return OWNER_IDS.includes(userId);
 }
 
-function formatBgl(amount) {
+function formatDl(amount) {
     const num = Number(amount || 0);
-    return `${num.toLocaleString('en-US')} BGL`;
+    return `${num.toLocaleString('en-US')} DL`;
 }
 
 function getValueByPath(obj, path) {
     if (!path) return undefined;
 
-    return path
-        .split('.')
-        .reduce((current, key) => {
-            if (current && Object.prototype.hasOwnProperty.call(current, key)) {
-                return current[key];
-            }
-            return undefined;
-        }, obj);
+    return path.split('.').reduce((current, key) => {
+        if (current && Object.prototype.hasOwnProperty.call(current, key)) {
+            return current[key];
+        }
+
+        return undefined;
+    }, obj);
+}
+
+function parseCookies(response) {
+    const raw = response.headers.get('set-cookie');
+
+    if (!raw) return null;
+
+    return raw
+        .split(',')
+        .map(cookie => cookie.split(';')[0])
+        .join('; ');
 }
 
 async function saveAmountConfig(client, guildId, config) {
@@ -44,67 +81,120 @@ async function getAmountConfig(client, guildId) {
     return await client.db.get(AMOUNT_CONFIG_KEY(guildId));
 }
 
-async function fetchGamblitBalance(config) {
-    const headers = {
-        'Accept': 'application/json',
-        'User-Agent': 'FrostMarket-Discord-Bot',
-    };
+async function loginToGamblit(force = false) {
+    const now = Date.now();
 
-    if (config.token) {
-        headers.Authorization = `Bearer ${config.token}`;
+    // Älä loggaa sisään uudestaan joka sekunti.
+    // Tämä käyttää samaa session cookieta noin 10 minuuttia.
+    if (!force && sessionCookie && now - lastLoginAt < 10 * 60 * 1000) {
+        return sessionCookie;
     }
 
-    const response = await fetch(config.apiUrl, {
-        method: 'GET',
-        headers,
+    const response = await fetch(GAMBLIT_LOGIN_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'User-Agent': 'FrostMarket-Discord-Bot',
+        },
+        body: JSON.stringify({
+            username: GAMBLIT_USERNAME,
+            password: GAMBLIT_PASSWORD,
+        }),
     });
 
     if (!response.ok) {
-        throw new Error(`API returned ${response.status} ${response.statusText}`);
+        throw new Error(`Login failed: ${response.status} ${response.statusText}`);
+    }
+
+    const cookie = parseCookies(response);
+
+    if (!cookie) {
+        // Jos sinun sivu palauttaa tokenin JSONina, tämä kohta pitää muuttaa.
+        // Esim: const data = await response.json(); sessionCookie = `token=${data.token}`;
+        throw new Error('Login succeeded, but no session cookie was returned.');
+    }
+
+    sessionCookie = cookie;
+    lastLoginAt = now;
+
+    return sessionCookie;
+}
+
+async function fetchGamblitDlAmount() {
+    const cookie = await loginToGamblit(false);
+
+    let response = await fetch(GAMBLIT_BALANCE_URL, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'FrostMarket-Discord-Bot',
+            'Cookie': cookie,
+        },
+    });
+
+    // Jos sessio vanheni, kirjaudutaan uudelleen kerran.
+    if (response.status === 401 || response.status === 403) {
+        const newCookie = await loginToGamblit(true);
+
+        response = await fetch(GAMBLIT_BALANCE_URL, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'User-Agent': 'FrostMarket-Discord-Bot',
+                'Cookie': newCookie,
+            },
+        });
+    }
+
+    if (!response.ok) {
+        throw new Error(`Balance API failed: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
 
-    const path = config.jsonPath || 'bgl';
-
-    let value = getValueByPath(data, path);
+    let value = getValueByPath(data, DL_JSON_PATH);
 
     if (value === undefined) {
         value =
-            data.bgl ??
+            data.dl ??
+            data.DL ??
             data.amount ??
             data.balance ??
-            data.balance?.bgl ??
-            data.account?.bgl ??
-            data.data?.bgl ??
+            data.balance?.dl ??
+            data.balance?.DL ??
+            data.account?.dl ??
+            data.account?.DL ??
+            data.data?.dl ??
+            data.data?.DL ??
             data.data?.balance;
     }
 
-    const numberValue = Number(value);
+    const amount = Number(value);
 
-    if (Number.isNaN(numberValue)) {
-        throw new Error(`Could not read BGL amount from API. Check json_path. Current path: ${path}`);
+    if (Number.isNaN(amount)) {
+        throw new Error(`Could not read DL amount. Check DL_JSON_PATH. Current path: ${DL_JSON_PATH}`);
     }
 
-    return numberValue;
+    return amount;
 }
 
-function buildAmountEmbed(config, amount, status = 'online', errorMessage = null) {
+function buildAmountEmbed(config, dlAmount, status = 'online', errorMessage = null) {
     const updatedUnix = Math.floor(Date.now() / 1000);
 
     const embed = new EmbedBuilder()
-        .setTitle(config.title || '❄️ FrostMarket BGL Stock')
+        .setTitle(config.title || '❄️ FrostMarket Live DL Stock')
         .setColor(status === 'online' ? '#00d5ff' : '#ED4245')
         .setDescription(
             status === 'online'
-                ? 'Live BGL amount from the connected Gamblit account.'
-                : 'Could not update live BGL amount.'
+                ? 'Live DL amount from the connected Gamblit account.'
+                : 'Could not update the live DL amount.'
         )
         .addFields(
             {
-                name: '💎 BGL Left',
+                name: '💎 DL Left',
                 value: status === 'online'
-                    ? `\`${formatBgl(amount)}\``
+                    ? `\`${formatDl(dlAmount)}\``
                     : '`Offline`',
                 inline: true,
             },
@@ -117,7 +207,7 @@ function buildAmountEmbed(config, amount, status = 'online', errorMessage = null
                 name: '⚡ Status',
                 value: status === 'online'
                     ? '`Live`'
-                    : '`API Error`',
+                    : '`Login/API Error`',
                 inline: true,
             },
             {
@@ -126,18 +216,18 @@ function buildAmountEmbed(config, amount, status = 'online', errorMessage = null
                 inline: true,
             },
             {
-                name: '🔗 Source',
-                value: '`Gamblit Account API`',
+                name: '🎮 Source',
+                value: '`Gamblit Account`',
                 inline: true,
             },
             {
-                name: '🛡️ Security',
-                value: '`Token hidden`',
+                name: '🔐 Login',
+                value: '`Saved inside bot file`',
                 inline: true,
             },
         )
         .setFooter({
-            text: config.footer || 'FrostMarket • Live Amount Tracker',
+            text: config.footer || 'FrostMarket • Live DL Tracker',
         })
         .setTimestamp();
 
@@ -176,7 +266,7 @@ async function startAmountUpdater(client, guildId) {
 
     if (!config) return;
 
-    let lastAmount = null;
+    let lastDlAmount = null;
     let lastEditAt = 0;
 
     const updateNow = async () => {
@@ -193,21 +283,20 @@ async function startAmountUpdater(client, guildId) {
                 throw new Error('Amount panel message was not found.');
             }
 
-            const amount = await fetchGamblitBalance(config);
+            const dlAmount = await fetchGamblitDlAmount();
 
             const now = Date.now();
 
-            const changed = amount !== lastAmount;
-            const enoughTimePassed = now - lastEditAt >= 1000;
-
-            if (changed && enoughTimePassed) {
-                const embed = buildAmountEmbed(config, amount, 'online');
+            // Tämä yrittää päivittää kerran sekunnissa.
+            // Jos Discord rate limit tulee vastaan, catch nappaa virheen.
+            if (now - lastEditAt >= UPDATE_INTERVAL_MS) {
+                const embed = buildAmountEmbed(config, dlAmount, 'online');
 
                 await message.edit({
                     embeds: [embed],
                 });
 
-                lastAmount = amount;
+                lastDlAmount = dlAmount;
                 lastEditAt = now;
             }
         } catch (error) {
@@ -228,8 +317,14 @@ async function startAmountUpdater(client, guildId) {
 
                 const now = Date.now();
 
+                // Error-tilassa ei spämmätä joka sekunti, vaan 5 sek välein.
                 if (now - lastEditAt >= 5000) {
-                    const embed = buildAmountEmbed(latestConfig, lastAmount || 0, 'offline', error.message);
+                    const embed = buildAmountEmbed(
+                        latestConfig,
+                        lastDlAmount || 0,
+                        'offline',
+                        error.message,
+                    );
 
                     await message.edit({
                         embeds: [embed],
@@ -243,43 +338,25 @@ async function startAmountUpdater(client, guildId) {
 
     await updateNow();
 
-    const interval = setInterval(updateNow, 1000);
+    const interval = setInterval(updateNow, UPDATE_INTERVAL_MS);
     intervals.set(guildId, interval);
 
-    logger.info('✅ Amount live updater started', {
+    logger.info('✅ Live DL amount updater started', {
         guildId,
-        intervalMs: 1000,
+        intervalMs: UPDATE_INTERVAL_MS,
     });
 }
 
 const amountCommand = {
     data: new SlashCommandBuilder()
         .setName('amount')
-        .setDescription('Owner-only live BGL amount tracker from Gamblit account API.')
+        .setDescription('Owner-only live DL amount tracker from Gamblit account.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
         .addChannelOption(option =>
             option
                 .setName('channel')
                 .setDescription('Channel where the live amount panel will be sent.')
                 .setRequired(true),
-        )
-        .addStringOption(option =>
-            option
-                .setName('api_url')
-                .setDescription('Gamblit API URL that returns your BGL amount as JSON.')
-                .setRequired(true),
-        )
-        .addStringOption(option =>
-            option
-                .setName('json_path')
-                .setDescription('Where the BGL amount is in JSON. Example: bgl or balance.bgl')
-                .setRequired(false),
-        )
-        .addStringOption(option =>
-            option
-                .setName('token')
-                .setDescription('Optional API token. Do not use your account password.')
-                .setRequired(false),
         )
         .addStringOption(option =>
             option
@@ -312,12 +389,11 @@ const amountCommand = {
             }
 
             const channel = interaction.options.getChannel('channel');
-            const apiUrl = interaction.options.getString('api_url');
-            const jsonPath = interaction.options.getString('json_path') || 'bgl';
-            const token = interaction.options.getString('token');
             const image = interaction.options.getString('image');
             const thumbnail = interaction.options.getString('thumbnail');
-            const title = interaction.options.getString('title') || '❄️ FrostMarket BGL Stock';
+            const title =
+                interaction.options.getString('title') ||
+                '❄️ FrostMarket Live DL Stock';
 
             await interaction.deferReply({
                 flags: MessageFlags.Ephemeral,
@@ -326,29 +402,31 @@ const amountCommand = {
             const panelConfig = {
                 guildId: interaction.guildId,
                 channelId: channel.id,
-                apiUrl,
-                jsonPath,
-                token: token || null,
                 image: image || null,
                 thumbnail: thumbnail || null,
                 title,
-                footer: `${interaction.guild.name} • Live Amount Tracker`,
+                footer: `${interaction.guild.name} • Live DL Tracker`,
                 createdBy: interaction.user.id,
                 updatedAt: new Date().toISOString(),
             };
 
-            let firstAmount = 0;
+            let firstDlAmount = 0;
             let firstStatus = 'online';
             let firstError = null;
 
             try {
-                firstAmount = await fetchGamblitBalance(panelConfig);
+                firstDlAmount = await fetchGamblitDlAmount();
             } catch (error) {
                 firstStatus = 'offline';
                 firstError = error.message;
             }
 
-            const embed = buildAmountEmbed(panelConfig, firstAmount, firstStatus, firstError);
+            const embed = buildAmountEmbed(
+                panelConfig,
+                firstDlAmount,
+                firstStatus,
+                firstError,
+            );
 
             const panelMessage = await channel.send({
                 embeds: [embed],
@@ -362,13 +440,12 @@ const amountCommand = {
 
             return await interaction.editReply({
                 content:
-                    `✅ Live BGL amount panel created in ${channel}.\n\n` +
-                    `**API URL:** saved\n` +
-                    `**JSON Path:** \`${jsonPath}\`\n` +
+                    `✅ Live DL amount panel created in ${channel}.\n\n` +
                     `**Update Speed:** every 1 second\n` +
+                    `**Login:** saved inside \`amount.js\`\n` +
                     `**Image:** ${image ? 'Added' : 'None'}\n` +
                     `**Thumbnail:** ${thumbnail ? 'Added' : 'None'}\n\n` +
-                    `⚠️ Do not put your Gamblit password in the bot. Use an API token only.`,
+                    `⚠️ Älä näytä tätä tiedostoa kenellekään, koska siinä on Gamblit salasana.`,
             });
         } catch (error) {
             logger.error('Amount command error:', {
@@ -380,12 +457,12 @@ const amountCommand = {
 
             if (interaction.deferred || interaction.replied) {
                 return await interaction.editReply({
-                    content: '❌ Failed to create live amount panel.',
+                    content: '❌ Failed to create live DL amount panel.',
                 }).catch(() => {});
             }
 
             return await interaction.reply({
-                content: '❌ Failed to create live amount panel.',
+                content: '❌ Failed to create live DL amount panel.',
                 flags: MessageFlags.Ephemeral,
             }).catch(() => {});
         }
