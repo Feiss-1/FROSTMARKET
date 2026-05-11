@@ -7,237 +7,83 @@ import {
 
 import { logger } from '../../utils/logger.js';
 
-// ===============================
-// EDIT THESE
-// ===============================
 const OWNER_IDS = ['772345007469756436'];
 
-// Laita Gamblit accountin tiedot tähän.
-// Älä lähetä tätä tiedostoa kenellekään, jos tässä on oikea salasana.
-const GAMBLIT_USERNAME = 'FROSTMARKET';
-const GAMBLIT_PASSWORD = 'Jukkapoika124';
-
-// Nämä pitää vaihtaa sinun Gamblit-sivun oikeisiin osoitteisiin.
-const GAMBLIT_LOGIN_URL = 'https://gamblit.net/';
-const GAMBLIT_BALANCE_URL = 'https://gamblit.net/';
-
-// Esimerkkejä:
-// Jos API palauttaa { "dl": 12345 }, käytä 'dl'
-// Jos API palauttaa { "balance": { "dl": 12345 } }, käytä 'balance.dl'
-const DL_JSON_PATH = 'dl';
-
-// Päivitysnopeus. 1000 = 1 sekunti.
-const UPDATE_INTERVAL_MS = 1000;
-
-// ===============================
-// DO NOT EDIT BELOW UNLESS NEEDED
-// ===============================
-
-const AMOUNT_CONFIG_KEY = (guildId) => `amount_panel_config_${guildId}`;
-const AMOUNT_INTERVAL_FLAG = Symbol.for('frostmarket.amount.intervals');
-
-let sessionCookie = null;
-let lastLoginAt = 0;
+const AMOUNT_CONFIG_KEY = (guildId) => `amount_stock_config_${guildId}`;
 
 function isOwner(userId) {
     return OWNER_IDS.includes(userId);
 }
 
-function formatDl(amount) {
-    const num = Number(amount || 0);
-    return `${num.toLocaleString('en-US')} DL`;
+function formatBgl(amount) {
+    return `${Number(amount || 0).toFixed(2)} BGL`;
 }
 
-function getValueByPath(obj, path) {
-    if (!path) return undefined;
-
-    return path.split('.').reduce((current, key) => {
-        if (current && Object.prototype.hasOwnProperty.call(current, key)) {
-            return current[key];
-        }
-
-        return undefined;
-    }, obj);
+function formatDlFromBgl(amount) {
+    return `${Number((amount || 0) * 100).toLocaleString('en-US')} DL`;
 }
 
-function parseCookies(response) {
-    const raw = response.headers.get('set-cookie');
-
-    if (!raw) return null;
-
-    return raw
-        .split(',')
-        .map(cookie => cookie.split(';')[0])
-        .join('; ');
-}
-
-async function saveAmountConfig(client, guildId, config) {
-    if (!client.db) return;
-    await client.db.set(AMOUNT_CONFIG_KEY(guildId), config);
-}
-
-async function getAmountConfig(client, guildId) {
+async function getStockConfig(client, guildId) {
     if (!client.db) return null;
     return await client.db.get(AMOUNT_CONFIG_KEY(guildId));
 }
 
-async function loginToGamblit(force = false) {
-    const now = Date.now();
-
-    // Älä loggaa sisään uudestaan joka sekunti.
-    // Tämä käyttää samaa session cookieta noin 10 minuuttia.
-    if (!force && sessionCookie && now - lastLoginAt < 10 * 60 * 1000) {
-        return sessionCookie;
-    }
-
-    const response = await fetch(GAMBLIT_LOGIN_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'FrostMarket-Discord-Bot',
-        },
-        body: JSON.stringify({
-            username: GAMBLIT_USERNAME,
-            password: GAMBLIT_PASSWORD,
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error(`Login failed: ${response.status} ${response.statusText}`);
-    }
-
-    const cookie = parseCookies(response);
-
-    if (!cookie) {
-        // Jos sinun sivu palauttaa tokenin JSONina, tämä kohta pitää muuttaa.
-        // Esim: const data = await response.json(); sessionCookie = `token=${data.token}`;
-        throw new Error('Login succeeded, but no session cookie was returned.');
-    }
-
-    sessionCookie = cookie;
-    lastLoginAt = now;
-
-    return sessionCookie;
+async function saveStockConfig(client, guildId, config) {
+    if (!client.db) return;
+    await client.db.set(AMOUNT_CONFIG_KEY(guildId), config);
 }
 
-async function fetchGamblitDlAmount() {
-    const cookie = await loginToGamblit(false);
-
-    let response = await fetch(GAMBLIT_BALANCE_URL, {
-        method: 'GET',
-        headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'FrostMarket-Discord-Bot',
-            'Cookie': cookie,
-        },
-    });
-
-    // Jos sessio vanheni, kirjaudutaan uudelleen kerran.
-    if (response.status === 401 || response.status === 403) {
-        const newCookie = await loginToGamblit(true);
-
-        response = await fetch(GAMBLIT_BALANCE_URL, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'FrostMarket-Discord-Bot',
-                'Cookie': newCookie,
-            },
-        });
-    }
-
-    if (!response.ok) {
-        throw new Error(`Balance API failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = await response.json();
-
-    let value = getValueByPath(data, DL_JSON_PATH);
-
-    if (value === undefined) {
-        value =
-            data.dl ??
-            data.DL ??
-            data.amount ??
-            data.balance ??
-            data.balance?.dl ??
-            data.balance?.DL ??
-            data.account?.dl ??
-            data.account?.DL ??
-            data.data?.dl ??
-            data.data?.DL ??
-            data.data?.balance;
-    }
-
-    const amount = Number(value);
-
-    if (Number.isNaN(amount)) {
-        throw new Error(`Could not read DL amount. Check DL_JSON_PATH. Current path: ${DL_JSON_PATH}`);
-    }
-
-    return amount;
-}
-
-function buildAmountEmbed(config, dlAmount, status = 'online', errorMessage = null) {
+function buildStockEmbed(config, guild) {
+    const amount = Number(config.amount || 0);
     const updatedUnix = Math.floor(Date.now() / 1000);
 
+    const guildName = guild?.name || config.guildName || 'FrostMarket';
+    const guildIcon = guild?.iconURL?.({ dynamic: true }) || undefined;
+
     const embed = new EmbedBuilder()
-        .setTitle(config.title || '❄️ FrostMarket Live DL Stock')
-        .setColor(status === 'online' ? '#00d5ff' : '#ED4245')
+        .setTitle(config.title || '💎 LIVE STOCK')
+        .setColor(config.color || '#00d5ff')
         .setDescription(
-            status === 'online'
-                ? 'Live DL amount from the connected Gamblit account.'
-                : 'Could not update the live DL amount.'
+            config.description ||
+            'Current BGL stock available for delivery.'
         )
         .addFields(
             {
-                name: '💎 DL Left',
-                value: status === 'online'
-                    ? `\`${formatDl(dlAmount)}\``
-                    : '`Offline`',
+                name: '💎 BGL Stock',
+                value: `\`${formatBgl(amount)}\``,
                 inline: true,
             },
             {
-                name: '🔄 Update Speed',
-                value: '`Every 1 second`',
+                name: '💰 DL Value',
+                value: `\`${formatDlFromBgl(amount)}\``,
                 inline: true,
             },
             {
                 name: '⚡ Status',
-                value: status === 'online'
-                    ? '`Live`'
-                    : '`Login/API Error`',
+                value: amount > 0 ? '`In Stock`' : '`Out of Stock`',
                 inline: true,
             },
             {
-                name: '🕒 Last Update',
+                name: '🔄 Updated',
                 value: `<t:${updatedUnix}:R>`,
                 inline: true,
             },
             {
-                name: '🎮 Source',
-                value: '`Gamblit Account`',
+                name: '📦 Update Method',
+                value: '`Auto-updated after each delivery`',
                 inline: true,
             },
             {
-                name: '🔐 Login',
-                value: '`Saved inside bot file`',
+                name: '🛒 Shop',
+                value: `\`${guildName}\``,
                 inline: true,
             },
         )
         .setFooter({
-            text: config.footer || 'FrostMarket • Live DL Tracker',
+            text: `${guildName} • Auto-updated after each delivery`,
+            iconURL: guildIcon,
         })
         .setTimestamp();
-
-    if (errorMessage) {
-        embed.addFields({
-            name: '⚠️ Error',
-            value: `\`${String(errorMessage).slice(0, 900)}\``,
-            inline: false,
-        });
-    }
 
     if (config.image) {
         embed.setImage(config.image);
@@ -250,131 +96,116 @@ function buildAmountEmbed(config, dlAmount, status = 'online', errorMessage = nu
     return embed;
 }
 
-async function startAmountUpdater(client, guildId) {
-    if (!client[AMOUNT_INTERVAL_FLAG]) {
-        client[AMOUNT_INTERVAL_FLAG] = new Map();
+async function updateStockMessage(client, guild, config) {
+    const channel = await client.channels.fetch(config.channelId).catch(() => null);
+
+    if (!channel || !channel.isTextBased()) {
+        throw new Error('Stock channel not found or is not text based.');
     }
 
-    const intervals = client[AMOUNT_INTERVAL_FLAG];
+    const message = await channel.messages.fetch(config.messageId).catch(() => null);
 
-    if (intervals.has(guildId)) {
-        clearInterval(intervals.get(guildId));
-        intervals.delete(guildId);
+    if (!message) {
+        throw new Error('Stock message not found. Run /amount setup again.');
     }
 
-    const config = await getAmountConfig(client, guildId);
+    const embed = buildStockEmbed(config, guild);
 
-    if (!config) return;
-
-    let lastDlAmount = null;
-    let lastEditAt = 0;
-
-    const updateNow = async () => {
-        try {
-            const channel = await client.channels.fetch(config.channelId).catch(() => null);
-
-            if (!channel || !channel.isTextBased()) {
-                throw new Error('Amount panel channel was not found or is not text based.');
-            }
-
-            const message = await channel.messages.fetch(config.messageId).catch(() => null);
-
-            if (!message) {
-                throw new Error('Amount panel message was not found.');
-            }
-
-            const dlAmount = await fetchGamblitDlAmount();
-
-            const now = Date.now();
-
-            // Tämä yrittää päivittää kerran sekunnissa.
-            // Jos Discord rate limit tulee vastaan, catch nappaa virheen.
-            if (now - lastEditAt >= UPDATE_INTERVAL_MS) {
-                const embed = buildAmountEmbed(config, dlAmount, 'online');
-
-                await message.edit({
-                    embeds: [embed],
-                });
-
-                lastDlAmount = dlAmount;
-                lastEditAt = now;
-            }
-        } catch (error) {
-            logger.warn('Amount updater failed:', {
-                guildId,
-                error: error.message,
-            });
-
-            try {
-                const latestConfig = await getAmountConfig(client, guildId);
-                if (!latestConfig) return;
-
-                const channel = await client.channels.fetch(latestConfig.channelId).catch(() => null);
-                if (!channel || !channel.isTextBased()) return;
-
-                const message = await channel.messages.fetch(latestConfig.messageId).catch(() => null);
-                if (!message) return;
-
-                const now = Date.now();
-
-                // Error-tilassa ei spämmätä joka sekunti, vaan 5 sek välein.
-                if (now - lastEditAt >= 5000) {
-                    const embed = buildAmountEmbed(
-                        latestConfig,
-                        lastDlAmount || 0,
-                        'offline',
-                        error.message,
-                    );
-
-                    await message.edit({
-                        embeds: [embed],
-                    });
-
-                    lastEditAt = now;
-                }
-            } catch {}
-        }
-    };
-
-    await updateNow();
-
-    const interval = setInterval(updateNow, UPDATE_INTERVAL_MS);
-    intervals.set(guildId, interval);
-
-    logger.info('✅ Live DL amount updater started', {
-        guildId,
-        intervalMs: UPDATE_INTERVAL_MS,
+    await message.edit({
+        embeds: [embed],
     });
+
+    return message;
 }
 
 const amountCommand = {
     data: new SlashCommandBuilder()
         .setName('amount')
-        .setDescription('Owner-only live DL amount tracker from Gamblit account.')
+        .setDescription('Manage live BGL stock amount.')
         .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-        .addChannelOption(option =>
-            option
-                .setName('channel')
-                .setDescription('Channel where the live amount panel will be sent.')
-                .setRequired(true),
+
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('setup')
+                .setDescription('Create the live BGL stock panel.')
+                .addChannelOption(option =>
+                    option
+                        .setName('channel')
+                        .setDescription('Channel where the stock panel will be sent.')
+                        .setRequired(true),
+                )
+                .addNumberOption(option =>
+                    option
+                        .setName('amount')
+                        .setDescription('Starting BGL amount. Example: 532.70')
+                        .setRequired(true),
+                )
+                .addStringOption(option =>
+                    option
+                        .setName('image')
+                        .setDescription('Big image URL for the stock embed.')
+                        .setRequired(false),
+                )
+                .addStringOption(option =>
+                    option
+                        .setName('thumbnail')
+                        .setDescription('Small thumbnail URL for the stock embed.')
+                        .setRequired(false),
+                )
+                .addStringOption(option =>
+                    option
+                        .setName('title')
+                        .setDescription('Embed title. Default: LIVE STOCK')
+                        .setRequired(false),
+                )
+                .addStringOption(option =>
+                    option
+                        .setName('description')
+                        .setDescription('Embed description.')
+                        .setRequired(false),
+                ),
         )
-        .addStringOption(option =>
-            option
-                .setName('image')
-                .setDescription('Big image URL for the amount embed.')
-                .setRequired(false),
+
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('set')
+                .setDescription('Set the exact BGL stock amount.')
+                .addNumberOption(option =>
+                    option
+                        .setName('amount')
+                        .setDescription('New exact BGL amount.')
+                        .setRequired(true),
+                ),
         )
-        .addStringOption(option =>
-            option
-                .setName('thumbnail')
-                .setDescription('Small thumbnail image URL for the amount embed.')
-                .setRequired(false),
+
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('add')
+                .setDescription('Add BGL to the current stock.')
+                .addNumberOption(option =>
+                    option
+                        .setName('amount')
+                        .setDescription('Amount of BGL to add.')
+                        .setRequired(true),
+                ),
         )
-        .addStringOption(option =>
-            option
-                .setName('title')
-                .setDescription('Panel title.')
-                .setRequired(false),
+
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('remove')
+                .setDescription('Remove BGL from the current stock after delivery.')
+                .addNumberOption(option =>
+                    option
+                        .setName('amount')
+                        .setDescription('Amount of BGL to remove.')
+                        .setRequired(true),
+                ),
+        )
+
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('show')
+                .setDescription('Show the current saved BGL stock.'),
         ),
 
     category: 'owner',
@@ -388,99 +219,131 @@ const amountCommand = {
                 });
             }
 
-            const channel = interaction.options.getChannel('channel');
-            const image = interaction.options.getString('image');
-            const thumbnail = interaction.options.getString('thumbnail');
-            const title =
-                interaction.options.getString('title') ||
-                '❄️ FrostMarket Live DL Stock';
+            const subcommand = interaction.options.getSubcommand();
 
-            await interaction.deferReply({
-                flags: MessageFlags.Ephemeral,
-            });
+            if (subcommand === 'setup') {
+                const channel = interaction.options.getChannel('channel');
+                const amount = interaction.options.getNumber('amount');
+                const image = interaction.options.getString('image');
+                const thumbnail = interaction.options.getString('thumbnail');
+                const title = interaction.options.getString('title') || '💎 LIVE STOCK';
+                const description =
+                    interaction.options.getString('description') ||
+                    'Current BGL stock available for delivery.';
 
-            const panelConfig = {
-                guildId: interaction.guildId,
-                channelId: channel.id,
-                image: image || null,
-                thumbnail: thumbnail || null,
-                title,
-                footer: `${interaction.guild.name} • Live DL Tracker`,
-                createdBy: interaction.user.id,
-                updatedAt: new Date().toISOString(),
-            };
+                const stockConfig = {
+                    guildId: interaction.guildId,
+                    guildName: interaction.guild.name,
+                    channelId: channel.id,
+                    amount: Number(amount || 0),
+                    image: image || null,
+                    thumbnail: thumbnail || null,
+                    title,
+                    description,
+                    color: '#00d5ff',
+                    createdBy: interaction.user.id,
+                    updatedBy: interaction.user.id,
+                    updatedAt: new Date().toISOString(),
+                };
 
-            let firstDlAmount = 0;
-            let firstStatus = 'online';
-            let firstError = null;
+                const embed = buildStockEmbed(stockConfig, interaction.guild);
 
-            try {
-                firstDlAmount = await fetchGamblitDlAmount();
-            } catch (error) {
-                firstStatus = 'offline';
-                firstError = error.message;
+                const message = await channel.send({
+                    embeds: [embed],
+                });
+
+                stockConfig.messageId = message.id;
+
+                await saveStockConfig(client, interaction.guildId, stockConfig);
+
+                return await interaction.reply({
+                    content:
+                        `✅ Live stock panel created in ${channel}.\n\n` +
+                        `**Current Stock:** ${formatBgl(stockConfig.amount)}\n` +
+                        `**DL Value:** ${formatDlFromBgl(stockConfig.amount)}`,
+                    flags: MessageFlags.Ephemeral,
+                });
             }
 
-            const embed = buildAmountEmbed(
-                panelConfig,
-                firstDlAmount,
-                firstStatus,
-                firstError,
-            );
+            const stockConfig = await getStockConfig(client, interaction.guildId);
 
-            const panelMessage = await channel.send({
-                embeds: [embed],
-            });
+            if (!stockConfig) {
+                return await interaction.reply({
+                    content: '❌ Stock panel is not set up yet. Use `/amount setup` first.',
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
 
-            panelConfig.messageId = panelMessage.id;
+            if (subcommand === 'show') {
+                return await interaction.reply({
+                    content:
+                        `💎 **Current Stock:** ${formatBgl(stockConfig.amount)}\n` +
+                        `💰 **DL Value:** ${formatDlFromBgl(stockConfig.amount)}`,
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
 
-            await saveAmountConfig(client, interaction.guildId, panelConfig);
+            const amount = interaction.options.getNumber('amount');
 
-            await startAmountUpdater(client, interaction.guildId);
+            if (amount < 0) {
+                return await interaction.reply({
+                    content: '❌ Amount cannot be negative.',
+                    flags: MessageFlags.Ephemeral,
+                });
+            }
 
-            return await interaction.editReply({
+            const oldAmount = Number(stockConfig.amount || 0);
+
+            if (subcommand === 'set') {
+                stockConfig.amount = Number(amount);
+            }
+
+            if (subcommand === 'add') {
+                stockConfig.amount = oldAmount + Number(amount);
+            }
+
+            if (subcommand === 'remove') {
+                stockConfig.amount = Math.max(0, oldAmount - Number(amount));
+            }
+
+            stockConfig.updatedBy = interaction.user.id;
+            stockConfig.updatedAt = new Date().toISOString();
+
+            await saveStockConfig(client, interaction.guildId, stockConfig);
+            await updateStockMessage(client, interaction.guild, stockConfig);
+
+            let actionText = 'updated';
+
+            if (subcommand === 'set') actionText = `set to ${formatBgl(stockConfig.amount)}`;
+            if (subcommand === 'add') actionText = `increased by ${formatBgl(amount)}`;
+            if (subcommand === 'remove') actionText = `decreased by ${formatBgl(amount)}`;
+
+            return await interaction.reply({
                 content:
-                    `✅ Live DL amount panel created in ${channel}.\n\n` +
-                    `**Update Speed:** every 1 second\n` +
-                    `**Login:** saved inside \`amount.js\`\n` +
-                    `**Image:** ${image ? 'Added' : 'None'}\n` +
-                    `**Thumbnail:** ${thumbnail ? 'Added' : 'None'}\n\n` +
-                    `⚠️ Älä näytä tätä tiedostoa kenellekään, koska siinä on Gamblit salasana.`,
+                    `✅ Stock ${actionText}.\n\n` +
+                    `**Old Stock:** ${formatBgl(oldAmount)}\n` +
+                    `**New Stock:** ${formatBgl(stockConfig.amount)}\n` +
+                    `**DL Value:** ${formatDlFromBgl(stockConfig.amount)}`,
+                flags: MessageFlags.Ephemeral,
             });
         } catch (error) {
             logger.error('Amount command error:', {
                 error: error.message,
                 stack: error.stack,
-                userId: interaction.user.id,
+                userId: interaction.user?.id,
                 guildId: interaction.guildId,
             });
 
-            if (interaction.deferred || interaction.replied) {
+            if (interaction.replied || interaction.deferred) {
                 return await interaction.editReply({
-                    content: '❌ Failed to create live DL amount panel.',
+                    content: '❌ Failed to update stock amount.',
                 }).catch(() => {});
             }
 
             return await interaction.reply({
-                content: '❌ Failed to create live DL amount panel.',
+                content: '❌ Failed to update stock amount.',
                 flags: MessageFlags.Ephemeral,
             }).catch(() => {});
-        }
-    },
-
-    async start(client) {
-        if (!client?.guilds?.cache) return;
-
-        for (const guild of client.guilds.cache.values()) {
-            const config = await getAmountConfig(client, guild.id).catch(() => null);
-            if (!config) continue;
-
-            await startAmountUpdater(client, guild.id).catch(error => {
-                logger.warn('Failed to restart amount updater:', {
-                    guildId: guild.id,
-                    error: error.message,
-                });
-            });
         }
     },
 };
